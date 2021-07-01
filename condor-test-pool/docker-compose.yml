@@ -4,21 +4,8 @@ services:
       image: ryantanaka/condor-cm:latest
       container_name: cm
       restart: always
-      ports:
-        - 9618:9618
       networks:
         - condor_net
-      environment:
-        - USE_POOL_PASSWORD=yes
-        - CONDOR_HOST=cm
-   worker:
-      depends_on:
-         - cm
-      image: ryantanaka/condor-execute
-      container_name: worker
-      restart: always
-      networks:
-         - condor_net
       environment:
         - USE_POOL_PASSWORD=yes
         - CONDOR_HOST=cm
@@ -33,6 +20,27 @@ services:
       environment:
         - USE_POOL_PASSWORD=yes
         - CONDOR_HOST=cm
+   worker:
+      depends_on:
+         - cm
+      image: ryantanaka/condor-execute
+      container_name: worker
+      restart: always
+      networks:
+         - condor_net
+      environment:
+        - USE_POOL_PASSWORD=yes
+        - CONDOR_HOST=cm
+   arm64-worker:
+      depends_on:
+         - cm
+      image: ryantanaka/condor-edge-worker
+      container_name: arm64-worker
+      restart: always
+      networks:
+         - condor_net
+      volumes:
+         - /usr/bin/qemu-aarch64-static:/usr/bin/qemu-aarch64-static
 networks:
    condor_net:
       name: condor_net
