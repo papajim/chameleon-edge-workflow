@@ -1,0 +1,39 @@
+version: "3.5"
+services:
+   cm:
+      image: ryantanaka/condor-cm:latest
+      container_name: cm
+      restart: always
+      ports:
+        - 9618:9618
+      networks:
+        - condor_net
+      environment:
+        - USE_POOL_PASSWORD=yes
+        - CONDOR_HOST=cm
+   worker:
+      depends_on:
+         - cm
+      image: ryantanaka/condor-execute
+      container_name: worker
+      restart: always
+      networks:
+         - condor_net
+      environment:
+        - USE_POOL_PASSWORD=yes
+        - CONDOR_HOST=cm
+   submit:
+      depends_on:
+         - cm
+      image: ryantanaka/condor-submit
+      container_name: submit
+      restart: always
+      networks:
+         - condor_net
+      environment:
+        - USE_POOL_PASSWORD=yes
+        - CONDOR_HOST=cm
+networks:
+   condor_net:
+      name: condor_net
+      driver: bridge
