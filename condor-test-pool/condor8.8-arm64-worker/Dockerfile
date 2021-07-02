@@ -28,7 +28,7 @@ RUN condor_store_cred -f /etc/condor/pool_password -p kevinMalone
 
 # config to start up condor_master
 COPY ./supervisord.conf /etc/supervisor/supervisord.conf
-COPY ./10-htcondor.conf /etc/supervisor/conf.d/10-htcondor.conf
+COPY ./condor-supervisor.conf /etc/supervisor/conf.d/condor-supervisor.conf
 
 CMD ["/usr/bin/supervisord"] 
 
