@@ -1,0 +1,46 @@
+version: "3.5"
+services:
+    cm:
+        image: ryantanaka/condor9-arm64-central-manager
+        container_name: cm
+        restart: always
+        networks:
+            - condor_net
+        volumes:
+            - /usr/bin/qemu-aarch64-static:/usr/bin/qemu-aarch64-static
+    worker:
+        depends_on:
+            - cm
+        image: ryantanaka/condor9-arm64-edge-worker
+        container_name: worker
+        restart: always
+        networks:
+            - condor_net
+        volumes:
+            - /usr/bin/qemu-aarch64-static:/usr/bin/qemu-aarch64-static
+    worker-2:
+        depends_on:
+            - cm
+        image: ryantanaka/condor8-arm64-edge-worker
+        container_name: worker-2
+        restart: always
+        networks:
+            - condor_net
+        volumes:
+            - /usr/bin/qemu-aarch64-static:/usr/bin/qemu-aarch64-static
+    submit:
+        depends_on:
+            - cm
+        image: ryantanaka/condor9-arm64-submit
+        container_name: submit
+        restart: always
+        networks:
+            - condor_net
+        volumes:
+            - /usr/bin/qemu-aarch64-static:/usr/bin/qemu-aarch64-static
+networks:
+    condor_net:
+        name: condor_net
+        driver: bridge
+        
+

@@ -1,0 +1,5 @@
+executable = job.sh
+output = out.txt
+error  = err.txt
+log    = log.txt
+queue

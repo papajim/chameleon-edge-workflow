@@ -1,0 +1,10 @@
+- create user condor
+    adduser condor
+
+- condor_configure --install=/work/htcondor/release_dir --install-dir=/usr --type=execute --owner=condor --overwrite --install
+
+- source /usr/condor.sh
+
+- start master  (at /usr/sbin/condor_master)
+
+- 
