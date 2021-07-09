@@ -1,0 +1,3 @@
+ryantanaka/condor8-arm64-submit
+ryantanaka/condor8-arm64-worker
+ryantanaka/condor8-arm64-central-manager
