@@ -17,9 +17,9 @@ COPY ./entrypoint.sh /home/condor/entrypoint.sh
 RUN chmod u+x /home/condor/entrypoint.sh
 
 # install pegasus worker package
-COPY ./pegasus-worker-5.1.0dev-aarch64_deb_10.tar.gz /home/condor
+COPY ./pegasus-worker-5.0.1dev-aarch64_deb_10.tar.gz /home/condor
 RUN cd /home/condor \
-    && tar -xzvf ./pegasus-worker-5.1.0dev-aarch64_deb_10.tar.gz
+    && tar -xzvf pegasus-worker-5.0.1dev-aarch64_deb_10.tar.gz
 
 EXPOSE 9618
 
