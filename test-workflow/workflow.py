@@ -10,14 +10,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 
 props = Properties()
 props["pegasus.mode"] = "development"
-props["pegasus.transfer.worker.package"] = "false"
 props.write()
-
-sc = SiteCatalog()
-condorpool = Site("condorpool").add_env(PEGASUS_HOME="/home/condor/pegasus-5.1.0dev").add_pegasus_profile(style="condor")
-sc.add_sites(condorpool)
-sc.write()
-
 
 rc = ReplicaCatalog()
 rc.add_replica(site="local", lfn="input.txt", pfn=CURRENT_DIR / "input.txt")
@@ -30,7 +23,17 @@ cat = Transformation(
             pfn=CURRENT_DIR / "bin/cat.sh",
             is_stageable=True
         )
-tc.add_transformations(cat)
+
+# override existing worker package so we can use the arm one
+pegasus_worker = Transformation(
+            "worker",
+            namespace="pegasus",
+            site="isi",
+            pfn="https://download.pegasus.isi.edu/arm-worker-packages/pegasus-worker-5.0.1dev-aarch64_deb_10.tar.gz",
+            is_stageable=True
+        )
+
+tc.add_transformations(cat, pegasus_worker)
 tc.write()
 
 wf = Workflow("test")
