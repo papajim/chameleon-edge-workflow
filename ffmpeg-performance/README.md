@@ -1,7 +1,7 @@
 # ffmpeg on raspberry pi 4 
 
 ## Test Videos
-- **duration**: 3 minutes 14.08 seconds
+- **duration**: 3 minutes 14.08 seconds (194.08 seconds)
 - **fps**: 25
 
 | resolution | mp4 size | individual frame size | total size of all frames |
@@ -27,6 +27,10 @@ ssd w/ ~ 2400 MB/s write   |                                                  | 
 - server: `time ffmpeg -i $VIDEO -v debug -report -vcodec mpeg4 -listen 1 -f mpegts tcp://192.168.0.16:9999`
     - for `tmpfs` scenario, used `time ffmpeg -i $VIDEO -frames $FRAMES -v debug -report -vcodec mpeg4 -listen 1 -f mpegts tcp://192.168.0.16:9999`
         where `$FRAMES` is the number of individual frames that will fit into 2.7GB (used `mount -o remount,size=3G /dev/shm` to set tmpfs size)
+
+For each video, the above commands were run on the MBP and RPI at about the same time.
+
+## Data
 
 log lines parsed:
 - parsed out logs which show fps of ffmpeg at arbitrary times (e.g. `5197 frame=  219 fps= 11 q=31.0 size=    2982kB time=00:00:08.72 bitrate=2801.9kbits/s speed=0.455x`)
@@ -88,3 +92,11 @@ log lines parsed:
   0.24    0.338613          22     14848           nanosleep
 ...
 ```
+
+## Using the RPI
+- Can we use it as a client?
+    -  Yes if we keep things in memory. If everything can't fit, we can flush
+        after any preliminary preprocessing is done to a frame.
+- Can we use it as a server?
+    - Yes, but from `1024x768` and higher some delay is introduced (e.g. a 194
+        second video will take 200 seconds to stream). 
