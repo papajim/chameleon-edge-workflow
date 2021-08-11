@@ -15,19 +15,23 @@
 ## Test Environment
 
 ```
-MacbookPro                 |                                                |  Raspberry Pi 4
+MacbookPro                 |                                                  |  Raspberry Pi 4
 4core/8thread              |--------- latency: ~0.397ms, ~112 MB/s bw --------|  4 core
-16 GB ram                  |                                                |  4 GB ram
-ssd w/ ~ 2400 MB/s write   |                                                |  64 GB sd card w/ ~ 50 MB/s write
+16 GB ram                  |                                                  |  4 GB ram
+ssd w/ ~ 2400 MB/s write   |                                                  |  64 GB sd card w/ ~ 50 MB/s write
 ```
 
 ## ffmpeg Commands
 - client: `time ffmpeg -re -i tcp://192.168.0.253:9999 -v debug -report videoFrames/frame%05d.bmp`
   - for `tmpfs` scenario, used `time ffmpeg -re -i tcp://192.168.0.253:9999 -v debug -report /dev/shm/videoFrames/frame%05d.bmp`
 - server: `time ffmpeg -i $VIDEO -v debug -report -vcodec mpeg4 -listen 1 -f mpegts tcp://192.168.0.16:9999`
+    - for `tmpfs` scenario, used `time ffmpeg -i $VIDEO -frames $FRAMES -v debug -report -vcodec mpeg4 -listen 1 -f mpegts tcp://192.168.0.16:9999`
+        where `$FRAMES` is the number of individual frames that will fit into 2.7GB (used `mount -o remount,size=3G /dev/shm` to set tmpfs size)
 
 log lines parsed:
-- parsed out logs which show fps of ffmpeg at arbitrary times
+- parsed out logs which show fps of ffmpeg at arbitrary times (e.g. `5197 frame=  219 fps= 11 q=31.0 size=    2982kB time=00:00:08.72 bitrate=2801.9kbits/s speed=0.455x`)
+- fps, speed, q, etc. is reported at some time not marked by a timestamp, so using `frame #` as a point of
+    reference in the plots
 ```
 5193 [h264 @ 0x7f9987008000] nal_unit_type: 1(Coded slice of a non-IDR picture), nal_ref_idc: 0
 5194 [h264 @ 0x7f998701b000] nal_unit_type: 1(Coded slice of a non-IDR picture), nal_ref_idc: 0
@@ -60,3 +64,27 @@ log lines parsed:
 
 ![reported fps](https://github.com/pegasus-isi/chameleon-edge-workflow/blob/master/ffmpeg-performance/Figure_2.png?raw=true)
 ![duration](https://github.com/pegasus-isi/chameleon-edge-workflow/blob/master/ffmpeg-performance/Figure_3.png?raw=true)
+
+## strace output when using SD card vs /dev/shm for writes
+```
+# writing to sd card
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 94.85  138.804315        9283     14951        19 futex
+  4.54    6.646224         119     55391           write
+  0.19    0.283952          39      7119           brk
+  0.17    0.248650          49      5061         8 openat
+  0.08    0.116254          21      5399           nanosleep
+...
+```
+
+```
+# writing to /dev/shm
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 96.13  133.670781        8730     15310        13 futex
+  2.97    4.134965          75     54920       724 write
+  0.28    0.388190          54      7119           brk
+  0.24    0.338613          22     14848           nanosleep
+...
+```
