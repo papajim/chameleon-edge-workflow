@@ -15,7 +15,7 @@ def parse_args(args=sys.argv[1:]):
     parser.add_argument(
                 "num_levels",
                 type=int,
-                choices=range(1, 100),
+                choices=range(1, 101),
                 metavar="[1,100]",
                 help="number of levels in the workflow"
             )
@@ -23,19 +23,27 @@ def parse_args(args=sys.argv[1:]):
     parser.add_argument(
                 "layer_width",
                 type=int,
-                choices=range(1,100),
+                choices=range(1,101),
                 metavar="[1,100]",
                 help="number of independent jobs per odd numbered layer"
             )
 
+    parser.add_argument(
+                "job_duration",
+                type=int,
+                choices=range(1, 301),
+                metavar="[1,300]",
+                help="duration in seconds that a job will sleep for in"
+            )
+
     return parser.parse_args(args)
 
-def build_dag(num_layers, layer_width):
+def build_dag(num_layers, layer_width, job_duration):
     dag = dags.DAG()
 
     sub = htcondor.Submit(
         executable="/bin/sleep",
-        arguments="30",
+        arguments=job_duration,
         **{"+mycustomattr": classad.quote("helloworld_$(num)")}
     )
 
