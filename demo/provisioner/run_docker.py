@@ -6,9 +6,9 @@ import docker
 
 client = docker.from_env()
 containers = list()
-for i in range(5):
+for i in range(1):
     c = client.containers.run(
-            image="htcondor/execute:el7",
+            image="ryantanaka/condor9-x86_64-isi-demo-worker",
             volumes=["/local-scratch/tanaka/condorexec/secrets:/root/secrets:ro"],
             environment={"CONDOR_HOST":"workflow.isi.edu",},
             remove=True,
