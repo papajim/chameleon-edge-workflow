@@ -76,7 +76,7 @@ def build_dag(num_layers, layer_width, job_duration):
 if __name__=="__main__":
     args = parse_args()
 
-    dag = build_dag(args.num_levels, args.layer_width)
+    dag = build_dag(args.num_levels, args.layer_width, args.job_duration)
 
     dag_path = Path.home() / "htcondor_dag"
 
