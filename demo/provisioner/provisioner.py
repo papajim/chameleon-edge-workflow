@@ -6,17 +6,19 @@ import shutil
 import enum
 import signal
 import argparse
+import threading
 
 from collections import namedtuple
+from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Set
 
 import docker
 
 import htcondor
 import classad
 
-from htcondor import dags
+from htcondor import dags 
 
 # custom attribute we will use to specify arch 
 ARCH_CUSTOM_ATTRIBUTE = "REQUIRED_ARCH"
@@ -83,49 +85,69 @@ def get_available_slots(col: htcondor.Collector) -> Dict:
     
     return result
 
+class QueueState:
+    class Count:
+        def __init__(self):
+            self.idle = 0
+            self.running = 0
+
+        def __repr__(self):
+            return "Count(idle={}, running={})".format(self.idle, self.running)
+
+    def __init__(self):
+        self.X86_64 = self.Count()
+        self.AARCH64 = self.Count()
+
+    def __str__(self):
+        return "QueueState: X86_64={}, AARCH64={}".format(self.X86_64, self.AARCH64)
+
+class PoolState:
+    def __init__(self):
+        # number of X86_64 slots available
+        self.X86_64 = 0
+        # number of AARCH64 slots available
+        self.AARCH64 = 0
+        # total number of unavailable slots
+        self.unavailable = 0
+
+    def __str__(self):
+        return "PoolState: X86_64={}, AARCH64={}, unavailable={}".format(
+                self.X86_64,
+                self.AARCH64,
+                self.unavailable
+            )
+
+EstimatedLoad = namedtuple("EstimatedLoad", [Arch.X86_64.value, Arch.AARCH64.value])
+
 class Provisioner:
-
-    class QueueState:
-        class Count:
-            def __init__(self):
-                self.idle = 0
-                self.running = 0
-
-            def __repr__(self):
-                return "Count(idle={}, running={})".format(self.idle, self.running)
-
-        def __init__(self):
-            self.X86_64 = self.Count()
-            self.AARCH64 = self.Count()
-
-        def __str__(self):
-            return "QueueState: X86_64={}, AARCH64={}".format(self.X86_64, self.AARCH64)
-
-    class PoolState:
-        def __init__(self):
-            self.X86_64 = 0
-            self.AARCH64 = 0
-            self.unavailable = 0
-
-        def __str__(self):
-            return "PoolState: X86_64={}, AARCH64={}, unavailable={}".format(
-                    self.X86_64,
-                    self.AARCH64,
-                    self.unavailable
-                )
-
-    
     def __init__(self, condor_host: str = None, token_dir: str = None):
         self.condor_host = condor_host
         self.token_dir = token_dir
         
         self.docker = docker.from_env()
+        
+        '''
+        {
+            "<short_id>": {
+                "cont": <cont obj>,
+                "last_idle": <datetime>
+            },
+            ...
+        }
+        '''
+        self.containers = dict()
+
 
         self.collector = htcondor.Collector()
         self.schedd_ad = self.collector.locate(htcondor.DaemonTypes.Schedd)
         self.schedd = htcondor.Schedd(self.schedd_ad)
 
-    def get_queue_state(self):
+        self.lock = threading.Lock()
+
+        self.stop_event = threading.Event()
+
+    ### Workload/Pool State ####################################################
+    def get_queue_state(self) -> QueueState:
         """
         Current state of the queue. Returns number of idle and running jobs for
         x86_64 and ARM
@@ -136,7 +158,7 @@ class Provisioner:
 
         # this doesn't account for for all jobs, only the ones for which we have
         # set the custom attribute: REQUIRED_ARCH
-        result = self.QueueState()
+        result = QueueState()
 
         for job in self.schedd.xquery(projection=["ClusterId", "ProcId", "JobStatus", ARCH_CUSTOM_ATTRIBUTE]):
             required_arch = str(job.get(ARCH_CUSTOM_ATTRIBUTE))
@@ -157,7 +179,7 @@ class Provisioner:
         return result
 
     
-    def get_pool_state(self):
+    def get_pool_state(self) -> PoolState:
         """
         Get the count of available and unvailable slots per architecture.
 
@@ -167,42 +189,200 @@ class Provisioner:
         """
 
         # THIS DOESN"T ACCOUNT FOR DYNAMIC SLOTS>........
-        result = self.PoolState()
+        result = PoolState()
         
         slots = self.collector.query(
             htcondor.AdTypes.Startd,
-            projection=["Name", "Activity", "State", "Arch"]
+            projection=["Name", "Activity", "State", "Arch", "DEMO_NODE"]
         )
 
         for s in slots:
             arch = s["Arch"]
             state = s["State"]
             activity = s["Activity"]
+            is_demo_node = s.get("DEMO_NODE")
 
-            if state == "Unclaimed" and activity == "Idle":
-                if arch == Arch.X86_64.value:
-                    result.X86_64 += 1
-                elif arch == Arch.AARCH64.value:
-                    result.AARCH64 += 1
+            # only care about workers in the pool that are part of this demo
+            if is_demo_node:
+                if state == "Unclaimed" and activity == "Idle":
+                    if arch == Arch.X86_64.value:
+                        result.X86_64 += 1
+                    elif arch == Arch.AARCH64.value:
+                        result.AARCH64 += 1
+                    else:
+                        raise RuntimeError("did not expect arch: {}".format(arch))
                 else:
-                    raise RuntimeError("did not expect arch: {}".format(arch))
-            else:
-                result.unavailable += 1
+                    result.unavailable += 1
         
         return result
 
-    def provision(self, rate: int, ):
-        '''
-        {
-            "hostname": {
-                "state": <state>,
-                "idle_duration": <duration>
-            },
-            ...
-        }
-        '''
-        pass
+    def get_idle_workers(self) -> Set[str]:
+        """Return names of all the unclaimed idle workers
 
+        :return: names of all unclaimed idle workers
+        :rtype: Set[str]
+        """
+        idle_workers = set()
+        
+        slots = self.collector.query(
+            htcondor.AdTypes.Startd,
+            projection=["Name", "Activity", "State", "Arch", "DEMO_NODE"]
+        )
+
+        for s in slots:
+            name = s["Name"]
+            state = s["State"]
+            activity = s["Activity"]
+            is_demo_node = s.get("DEMO_NODE")
+
+            if is_demo_node:
+                if state == "Unclaimed" and activity == "Idle":
+                    idle_workers.add(name)       
+
+        return idle_workers
+
+
+    def compute_load(self) -> EstimatedLoad:
+        """
+        Compute estimated load, calculated as 
+        (num idle jobs of a given architechture / num unclaimed idle workers of the same arch)
+
+        :return: load for x86_64 and aarch64
+        :rtype: EstimatedLoad
+        """
+        queue_state = self.get_queue_state()
+        pool_state = self.get_pool_state()
+
+        print(queue_state)
+        print(pool_state)
+
+        if queue_state.X86_64.idle == 0 and pool_state.X86_64 == 0:
+            x86_64_est_load = 0
+        elif queue_state.X86_64.idle > 0 and pool_state.X86_64 == 0:
+            x86_64_est_load = float("inf")
+        else:
+            x86_64_est_load = queue_state.X86_64.idle / pool_state.X86_64
+        
+        if queue_state.AARCH64.idle == 0 and pool_state.AARCH64 == 0:
+            arm_est_load = 0
+        elif queue_state.AARCH64.idle > 0 and pool_state.AARCH64 == 0:
+            arm_est_load = float("inf")
+        else:
+            arm_est_load = queue_state.AARCH64.idle / pool_state.AARCH64
+
+        return EstimatedLoad(
+            X86_64=x86_64_est_load,
+            AARCH64=arm_est_load
+        )
+
+    ### Container Management ###################################################
+    def stop_containers(self):
+        """
+        To be run as a thread, stop_containers will check the pool state and
+        currently managed containers to see if they have been sitting idle for
+        too long. If they have been sitting idle for more than MAX_IDLE_DUR, the
+        container will be killed via SIGINT.
+        """
+
+        print("stop_containers thread started")
+
+        # if this is increased, calculated idle duration can start to become
+        # inaccurate due race conditions from polling the queue
+        POLLING_RATE = 1
+
+        # if a worker has sat idle for longer than MAX_IDLE_DUR seconds, 
+        # we will kill that container
+        MAX_IDLE_DUR = 30
+
+        while not self.stop_event.is_set():
+            idle_workers = self.get_idle_workers()
+
+            for short_id, value in self.containers.items():
+                if short_id in idle_workers:
+                    # if now - last_idle > MAX_IDLE_DUR then we kill
+                    idle_dur = datetime.now() - value["last_idle"].total_seconds()                   
+
+                    if idle_dur > MAX_IDLE_DUR:
+                        print("{} has been idle for {} seconds; sending SIGINT".format(short_id, idle_dur))
+                        with self.lock:
+                            value["cont"].kill(signal=signal.SIGINT)
+                else:
+                    # reset last_idle to now
+                    print("{} is not idle; resetting last_idle")
+                    with self.lock:
+                        value["last_idle"] = datetime.now()
+
+            time.sleep(POLLING_RATE)
+
+        print("stop_containers exiting")        
+
+    def shutdown_all_containers(self):
+        """Shutdown all running containers."""
+
+        for short_id, value in self.containers():
+            print("shutting down container {}".format(short_id))
+            value["cont"].kill(signal=signal.SIGINT)
+
+    def start_containers(self, rate: int, load_threshold: float):
+        """
+        Start containers to meet expected demand for workers based on 
+        idle jobs in the queue.
+
+        :param rate: polling rate
+        :type rate: int
+        :param load_threshold: threshold, which if exceeded, will cause a container to be created
+        :type load_threshold: float
+        :raises NotImplementedError: AARCH64 worker supported not added yet 
+        """
+        print("start_containers thread started")
+        while not self.stop_event.is_set():
+            load = self.compute_load()
+            print("current load: {}".format(load))
+
+            if load.X86_64 > load_threshold:
+                # start cont
+                cont = self.docker.containers.run(
+                    image="ryantanaka/condor9-x86_64-isi-demo-worker",
+                    volumes=["/local-scratch/tanaka/condorexec/secrets:/root/secrets:ro"],
+                    environment={"CONDOR_HOST":"workflow.isi.edu",},
+                    remove=True,
+                    detach=True  
+                )
+
+                print("started {}".format(cont.short_id))
+                with self.lock:
+                    self.containers[cont.short_id] = {
+                        "cont": cont,
+                        "last_idle": datetime.now()
+                    }
+
+            if load.AARCH64 > load_threshold:
+                # start cont
+                raise NotImplementedError("still need to add AARCH64 worker")
+
+            time.sleep(rate)
+        
+        print("start_containers exiting")
+
+    def provision(self, rate: int, load_threshold: float):
+        """
+        Main provisioning function
+
+        :param rate: rate (in seconds), at which to check if new containers need to be started
+        :type rate: int
+        :param load_threshold: threshold, which if exceeded, will cause a container to be created
+        :type load_threshold: float
+        """
+        starter = threading.Thread(target=self.start_containers, args=(rate, load_threshold,))
+        stopper = threading.Thread(target=self.stop_containers)
+
+        starter.start()
+        stopper.start()
+
+        starter.join()
+        stopper.join()
+
+    ### Monitoring #############################################################
     def monitor(self, rate: int):
         slots_str = "{0:>20} {1} {2}"
         bar = "{} ".format(chr(9605))
@@ -228,6 +408,9 @@ class Provisioner:
             time.sleep(rate)
             os.system("clear")
 
+################################################################################
+### Workflow Creation/Submission ###############################################
+################################################################################
 def build_and_submit_dag(num_layers, layer_width, job_duration):
     # TODO: support multiple different architectures (right now we just set
     # to x86_64
@@ -236,6 +419,7 @@ def build_and_submit_dag(num_layers, layer_width, job_duration):
     sub = htcondor.Submit(
         executable="/bin/sleep",
         arguments=job_duration,
+        requirements="DEMO_NODE == true",
         **{"+{}".format(ARCH_CUSTOM_ATTRIBUTE): Arch.X86_64.value}
     )
 
@@ -317,16 +501,12 @@ def parse_args(args=sys.argv[1:]):
     )
 
     parser_provision.add_argument(
-        "condor_host",
-        type=str,
-        help="set CONDOR_HOST for worker containers that are started"
-    )
-
-    parser_provision.add_argument(
-        "token_dir",
-        type=str,
-        help="""directory where condor token file exists, will be used to connect
-        to condor host"""
+        "load_threshold",
+        type=float,
+        default=1.0,
+        metavar="(0.1, 10]",
+        help="""threshold of (num_idle jobs of a given arch / available workers 
+        of a given arch) at which a new worker container will be started"""
     )
 
     ### Submit ###############################################################
@@ -358,21 +538,33 @@ def parse_args(args=sys.argv[1:]):
 
     return parser.parse_args(args)
 
-if __name__=="__main__":
-    # setup SIGINT handler
-    def sigint_handler(signum, frame):
-        print("got interrupt, exiting")
-        sys.exit(0)
+class ServiceExit(Exception):
+    """Custom exception to trigger clean shutdown."""
+    pass
 
+def sigint_handler(signum, frame):
+    print("got interrupt, exiting")
+    raise ServiceExit
+
+if __name__=="__main__":
     signal.signal(signal.SIGINT, sigint_handler)
 
     args = parse_args()
 
-    if args.cmd == "monitor":
-        Provisioner().monitor(args.monitor_rate)
+    if args.cmd == "monitor":    
+        try:
+            Provisioner().monitor(args.monitor_rate)
+        except ServiceExit:
+            print("exiting monitoring")
 
     elif args.cmd == "provision":
-        pass
+        try:
+            provisioner = Provisioner()
+            provisioner.provision(args.provision_rate, args.load_threshold)
+        except ServiceExit:
+            provisioner.stop_event.set()
+            provisioner.stop_containers()
+
     elif args.cmd == "submit":
         build_and_submit_dag(
                 num_layers=args.num_layers, 
