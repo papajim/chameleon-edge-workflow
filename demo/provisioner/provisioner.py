@@ -128,7 +128,7 @@ class Provisioner:
         
         '''
         {
-            "<short_id>": {
+            "<id>": {
                 "cont": <cont obj>,
                 "last_idle": <datetime>
             },
@@ -292,25 +292,36 @@ class Provisioner:
 
         # if a worker has sat idle for longer than MAX_IDLE_DUR seconds, 
         # we will kill that container
-        MAX_IDLE_DUR = 30
+        MAX_IDLE_DUR = 10
+
 
         while not self.stop_event.is_set():
             idle_workers = self.get_idle_workers()
 
-            for short_id, value in self.containers.items():
-                if short_id in idle_workers:
+            to_delete = list()
+            for _id, value in self.containers.items():
+                # need to truncate id to be the same length as slot name
+                # .... not great, but it will work for now so we can use fast
+                # access of the set 
+                if _id[:12] in idle_workers:
                     # if now - last_idle > MAX_IDLE_DUR then we kill
-                    idle_dur = datetime.now() - value["last_idle"].total_seconds()                   
+                    idle_dur = (datetime.now() - value["last_idle"]).total_seconds()                   
 
                     if idle_dur > MAX_IDLE_DUR:
-                        print("{} has been idle for {} seconds; sending SIGINT".format(short_id, idle_dur))
+                        print("{} has been idle for {} seconds; sending SIGINT".format(_id, idle_dur))
                         with self.lock:
                             value["cont"].kill(signal=signal.SIGINT)
+                        
+                        to_delete.append(_id)
+                            
                 else:
                     # reset last_idle to now
-                    print("{} is not idle; resetting last_idle")
+                    print("{} is not idle; resetting last_idle".format(_id))
                     with self.lock:
                         value["last_idle"] = datetime.now()
+
+            for _id in to_delete:
+                del self.containers[_id]
 
             time.sleep(POLLING_RATE)
 
@@ -319,8 +330,8 @@ class Provisioner:
     def shutdown_all_containers(self):
         """Shutdown all running containers."""
 
-        for short_id, value in self.containers():
-            print("shutting down container {}".format(short_id))
+        for _id, value in self.containers.items():
+            print("shutting down container {}".format(_id))
             value["cont"].kill(signal=signal.SIGINT)
 
     def start_containers(self, rate: int, load_threshold: float):
@@ -349,9 +360,9 @@ class Provisioner:
                     detach=True  
                 )
 
-                print("started {}".format(cont.short_id))
+                print("started {}".format(cont.id))
                 with self.lock:
-                    self.containers[cont.short_id] = {
+                    self.containers[cont.id] = {
                         "cont": cont,
                         "last_idle": datetime.now()
                     }
@@ -563,7 +574,7 @@ if __name__=="__main__":
             provisioner.provision(args.provision_rate, args.load_threshold)
         except ServiceExit:
             provisioner.stop_event.set()
-            provisioner.stop_containers()
+            provisioner.shutdown_all_containers()
 
     elif args.cmd == "submit":
         build_and_submit_dag(
