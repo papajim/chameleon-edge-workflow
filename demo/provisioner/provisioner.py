@@ -7,6 +7,7 @@ import enum
 import signal
 import argparse
 import threading
+import pickle
 
 from collections import namedtuple
 from datetime import datetime
@@ -22,6 +23,13 @@ from htcondor import dags
 
 # custom attribute we will use to specify arch 
 ARCH_CUSTOM_ATTRIBUTE = "REQUIRED_ARCH"
+
+def print_red(s): 
+    print("\033[91m {}\033[00m" .format(s))
+def print_green(s): 
+    print("\033[92m {}\033[00m" .format(s))
+def print_cyan(s): 
+    print("\033[96m {}\033[00m" .format(s))
 
 class JobStatus(enum.Enum):
     UNEXPANDED = 0
@@ -292,7 +300,7 @@ class Provisioner:
 
         # if a worker has sat idle for longer than MAX_IDLE_DUR seconds, 
         # we will kill that container
-        MAX_IDLE_DUR = 10
+        MAX_IDLE_DUR = 30
 
 
         while not self.stop_event.is_set():
@@ -308,7 +316,7 @@ class Provisioner:
                     idle_dur = (datetime.now() - value["last_idle"]).total_seconds()                   
 
                     if idle_dur > MAX_IDLE_DUR:
-                        print("{} has been idle for {} seconds; sending SIGINT".format(_id, idle_dur))
+                        print_red("STOPPING {} (idle for {} seconds) sending SIGINT".format(_id, idle_dur))
                         with self.lock:
                             value["cont"].kill(signal=signal.SIGINT)
                         
@@ -316,7 +324,6 @@ class Provisioner:
                             
                 else:
                     # reset last_idle to now
-                    print("{} is not idle; resetting last_idle".format(_id))
                     with self.lock:
                         value["last_idle"] = datetime.now()
 
@@ -348,7 +355,7 @@ class Provisioner:
         print("start_containers thread started")
         while not self.stop_event.is_set():
             load = self.compute_load()
-            print("current load: {}".format(load))
+            print_cyan("CURRENT LOAD: {}".format(load))
 
             if load.X86_64 > load_threshold:
                 # start cont
@@ -360,7 +367,7 @@ class Provisioner:
                     detach=True  
                 )
 
-                print("started {}".format(cont.id))
+                print_green("STARTED {}".format(cont.id))
                 with self.lock:
                     self.containers[cont.id] = {
                         "cont": cont,
@@ -397,6 +404,14 @@ class Provisioner:
     def monitor(self, rate: int):
         slots_str = "{0:>20} {1} {2}"
         bar = "{} ".format(chr(9605))
+        data = {
+            "ts": list(),
+            "unavailable": list(),
+            "idle_worker": list(),
+            "idle_job": list(),
+            "running_job": list()
+        }
+
         while True:
             pool = self.get_pool_state()
             queue = self.get_queue_state()
@@ -415,6 +430,18 @@ class Provisioner:
             print(Arch.AARCH64.value)
             print(slots_str.format("running", bar*queue.AARCH64.running, queue.AARCH64.running))
             print(slots_str.format("idle", bar*queue.AARCH64.idle, queue.AARCH64.idle))
+
+
+            data["ts"].append(datetime.now().timestamp())
+            data["unavailable"].append(pool.unavailable)
+            data["idle_worker"].append(pool.X86_64)
+            data["idle_job"].append(queue.X86_64.idle)
+            data["running_job"].append(queue.X86_64.running)
+
+            with open("data.pkl", "wb") as f:
+                pickle.dump(data, f)
+            
+            print(data)
 
             time.sleep(rate)
             os.system("clear")
