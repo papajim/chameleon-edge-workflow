@@ -8,6 +8,7 @@ import signal
 import argparse
 import threading
 import pickle
+import uuid
 
 from collections import namedtuple
 from datetime import datetime
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Set
 
 import docker
+import paramiko
 
 import htcondor
 import classad
@@ -127,12 +129,51 @@ class PoolState:
 
 EstimatedLoad = namedtuple("EstimatedLoad", [Arch.X86_64.value, Arch.AARCH64.value])
 
+class SSHClient:
+    def __init__(self):
+        self.client = paramiko.SSHClient()
+        self.client.load_system_host_keys()
+
+    def execute(self, cmd: str) -> dict:
+        try:
+            client.connect(
+                        hostname="scitech-rpi-1.ads.isi.edu",
+                        username="scitech",
+                        key_filename="/Users/ryantanaka/.ssh/edge-no-pw"
+                    )
+
+            stdin, stdout, stderr = client.exec_command(cmd)
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError
+
+            for line in stdout:
+                print(line)
+
+        except paramiko.SSHException as e:
+            print(e)
+        except RuntimeError:
+            print("SSH command: {} FAILED with exit_code: {}".format(cmd, exit_code))
+            print("stder:")
+            for line in stderr:
+                print(line.strip())
+        finally:
+            client.close()
+
+        return {
+                    "exit_code": exit_code,
+                    "stdin": stdin,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                }
+
 class Provisioner:
     def __init__(self, condor_host: str = None, token_dir: str = None):
         self.condor_host = condor_host
         self.token_dir = token_dir
         
         self.docker = docker.from_env()
+        self.ssh_client = SSHClient()
         
         '''
         {
@@ -144,6 +185,8 @@ class Provisioner:
         }
         '''
         self.containers = dict()
+        self.containers[Arch.X86_64.value] = dict()
+        self.containers[Arch.AARCH64.value] = dict()
 
 
         self.collector = htcondor.Collector()
@@ -307,7 +350,7 @@ class Provisioner:
             idle_workers = self.get_idle_workers()
 
             to_delete = list()
-            for _id, value in self.containers.items():
+            for _id, value in self.containers[Arch.X86_64].items():
                 # need to truncate id to be the same length as slot name
                 # .... not great, but it will work for now so we can use fast
                 # access of the set 
@@ -316,7 +359,7 @@ class Provisioner:
                     idle_dur = (datetime.now() - value["last_idle"]).total_seconds()                   
 
                     if idle_dur > MAX_IDLE_DUR:
-                        print_red("STOPPING {} (idle for {} seconds) sending SIGINT".format(_id, idle_dur))
+                        print_red("STOPPING X86_64 cont {} (idle for {} seconds) sending SIGINT".format(_id, idle_dur))
                         with self.lock:
                             value["cont"].kill(signal=signal.SIGINT)
                         
@@ -326,6 +369,19 @@ class Provisioner:
                     # reset last_idle to now
                     with self.lock:
                         value["last_idle"] = datetime.now()
+
+            for _id, last_idle in self.containers[Arch.AARCH64].items():
+                if _id in idle_workers:
+                    idle_dur = (datetime.now() - last_idle).total_seconds()
+
+                    if idle_dur > MAX_IDLE_DUR:
+                        print_red("STOPPING AARCH64 cont {} (idle for {} seconds) sending SIGINT".format(_id, idle_dur))
+                        
+                        result = self.ssh_client.execute("docker kill --signal=SIGINT {}".format(cont_id))
+                        if result["exit_code"] != 0:
+                            raise RuntimeError("ERROR SSH docker could not kill AARCH64 cont {}".format(cont_id))
+                       
+                        to_delete.append(cont_id)
 
             for _id in to_delete:
                 del self.containers[_id]
@@ -337,9 +393,15 @@ class Provisioner:
     def shutdown_all_containers(self):
         """Shutdown all running containers."""
 
-        for _id, value in self.containers.items():
+        for _id, value in self.containers[Arch.X86_64.value].items():
             print("shutting down container {}".format(_id))
             value["cont"].kill(signal=signal.SIGINT)
+
+        for cont_id in self.containers[Arch.AARCH64.value]:
+            result = self.ssh_client.execute("docker kill --signal=SIGINT {}".format(cont_id))
+            print("shutting down container {}".format(cont_id))
+            if result["exit_code"] != 0:
+                print("ERROR SSH docker could not kill {}".format(cont_id))
 
     def start_containers(self, rate: int, load_threshold: float):
         """
@@ -357,6 +419,7 @@ class Provisioner:
             load = self.compute_load()
             print_cyan("CURRENT LOAD: {}".format(load))
 
+
             if load.X86_64 > load_threshold:
                 # start cont
                 cont = self.docker.containers.run(
@@ -369,13 +432,47 @@ class Provisioner:
 
                 print_green("STARTED {}".format(cont.id))
                 with self.lock:
-                    self.containers[cont.id] = {
+                    self.containers[Arch.X86_64.value][cont.id] = {
                         "cont": cont,
                         "last_idle": datetime.now()
                     }
 
             if load.AARCH64 > load_threshold:
                 # start cont
+                cont_name = str(uuid.uuid1())
+                cmd = " ".join((
+                        "abc",
+                        "234"
+                    ))
+
+                result = self.ssh_client.execute(cmd)
+                if result["exit_code"] == 0:
+                    cmd = " ".join((
+                            "docker",
+                            "ps",
+                            "-aqf",
+                            "name={}".format(cont_name)
+                        ))
+                    result = self.ssh_client.execute(cmd)
+                    cont_id = None
+                    if result["exit_code"] == 0:
+                        stdout = list(result["stdout"])
+                        if len(stdout) > 0:
+                            cont_id = stdout[0].strip()
+                        else:
+                            raise RuntimeError("SSH docker ps command could not get container id")
+                    else:
+                        raise RuntimeError("SSH docker ps command failed")
+
+                    print_green("STARTED {}".format(cont_id))
+                    with self.lock:
+                        self.container[Arch.AARCH64][cont_id] = {
+                                    "last_idle": datetime.now()
+                                }
+                else:
+                    raise RuntimeError("SSH Docker command failed")
+                
+
                 raise NotImplementedError("still need to add AARCH64 worker")
 
             time.sleep(rate)
@@ -458,7 +555,7 @@ def build_and_submit_dag(num_layers, layer_width, job_duration):
         executable="/bin/sleep",
         arguments=job_duration,
         requirements="DEMO_NODE == true",
-        **{"+{}".format(ARCH_CUSTOM_ATTRIBUTE): Arch.X86_64.value}
+        **{"+{}".format(ARCH_CUSTOM_ATTRIBUTE): Arch.AARCH64.value}
     )
 
     prev_layer = dag.layer(
